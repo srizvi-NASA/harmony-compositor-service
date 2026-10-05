@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+./bin/build-test "$@"
+docker run --rm "harmony/compositor-test:${1:-$(<docker/service_version.txt)}"

@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Compositor Service Settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["data_dir", "output_dir", "logging", "test"],
+  "properties": {
+    "data_dir": {"type": "string", "minLength": 1},
+    "output_dir": {"type": "string", "minLength": 1},
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["log_to_console", "log_to_file", "log_file_path", "log_level"],
+      "properties": {
+        "log_to_console": {"type": "boolean"},
+        "log_to_file": {"type": "boolean"},
+        "log_file_path": {"type": "string", "minLength": 1},
+        "log_level": {"type": "string", "enum": ["RUN", "DEBUG"]}
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_dir", "output_dir", "remove_after_test"],
+      "properties": {
+        "data_dir": {"type": "string", "minLength": 1},
+        "output_dir": {"type": "string", "minLength": 1},
+        "remove_after_test": {"type": "boolean"}
+      }
+    }
+  }
+}

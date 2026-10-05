@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="harmony/compositor"
+TAG="$(<docker/service_version.txt)"
+docker rmi "${IMAGE}:${TAG}" "${IMAGE}:latest" 2>/dev/null || true

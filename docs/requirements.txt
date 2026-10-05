@@ -1,0 +1,4 @@
+jupyter
+xarray
+netCDF4
+matplotlib

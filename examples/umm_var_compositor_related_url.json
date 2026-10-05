@@ -1,0 +1,7 @@
+{
+  "URL": "https://<approved-host>/misr_dhr_natural_color_compositor_config.json",
+  "URLContentType": "DistributionURL",
+  "Type": "SERVICE CONFIGURATION",
+  "Subtype": "COMPOSITOR CONFIGURATION",
+  "Description": "Configuration used by the Harmony Compositor Service for MISR DHR natural-color composition."
+}

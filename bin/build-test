@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IMAGE="harmony/compositor-test"
+TAG="${1:-$(<docker/service_version.txt)}"
+export SERVICE_VERSION="$(uv tool run hatch version)"
+docker build --platform linux/amd64 \
+  -f docker/tests.Dockerfile \
+  --build-arg SERVICE_VERSION="$SERVICE_VERSION" \
+  -t "${IMAGE}:${TAG}" .
+echo "Built ${IMAGE}:${TAG}"
