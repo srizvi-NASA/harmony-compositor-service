@@ -1,46 +1,45 @@
 # Architecture
 
-The Compositor is split into four responsibilities so that Harmony integration,
-configuration discovery, validation, and science processing can evolve
-independently.
+The Compositor separates Harmony integration, configuration discovery,
+validation, and science processing.
 
 ## Harmony adapter
 
-`adapter.py` handles Harmony-specific concerns only: selecting the STAC data
-asset, downloading it with `harmony-service-lib`, retrieving the external
-configuration, invoking the core processor, staging the output, and returning a
+`adapter.py` selects/downloads the STAC data asset, retrieves the external
+configuration, invokes the core processor, stages the output, and returns the
 new STAC data asset.
 
 ## Configuration discovery
 
-`config_utility.py` searches the Harmony source's UMM-Var RelatedURLs for:
+`config_utility.py` searches UMM-Var RelatedURLs for:
 
 ```text
 DistributionURL > SERVICE CONFIGURATION > COMPOSITOR CONFIGURATION
 ```
 
-The URL is the source of truth.  There is intentionally no hard-coded
-collection-to-configuration map in Python.
+There is no hard-coded collection-to-configuration mapping in Python.
 
 ## Validation
 
-`config_validator.py` performs JSON-schema validation and a small semantic pass
-for relationships that draft-07 JSON Schema cannot express conveniently, such
-as ensuring channel order matches the declared channels and clip minimum does
-not exceed maximum.
+`config_validator.py` validates the JSON schema plus relationships such as:
+channel order matching channel definitions, valid clip/display ranges, output
+variable matching input variable for structure-preserving replacement, and use
+of a new RGB channel dimension rather than repurposing the source band dimension.
 
 ## Composition core
 
-`core.py` is Harmony-independent.  It:
+`core.py`:
 
-1. opens the configured netCDF group/variable;
-2. validates the configured Band dimension and coordinate;
-3. resolves channel bands from coordinate labels;
-4. converts configured source nodata values to NaN;
-5. clips channel values;
-6. stacks channels in configured output order;
-7. preserves useful source attributes and grid-mapping support variables; and
-8. writes the multi-channel netCDF output.
+1. opens the configured grouped source variable;
+2. resolves channels by coordinate labels;
+3. converts configured nodata to NaN and clips source data;
+4. scales clipped values to the configured display range;
+5. stacks exactly three channels in configured RGB order;
+6. recursively copies the original NetCDF hierarchy using netCDF4;
+7. replaces only the configured target variable at the same group/name with the
+   three-channel composite; and
+8. preserves unrelated dimensions, variables, groups, and attributes.
 
-The core never contains MISR numeric band indices.  The MISR-specific path and
-labels live in the external configuration.
+For MISR, the original `Band=4` dimension is retained because other variables
+may depend on it. DHR alone is recreated with a dedicated `rgb_band=3`
+dimension. This output is designed to pass directly through Net2Cog to HyBIG.

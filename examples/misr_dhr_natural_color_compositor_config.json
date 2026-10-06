@@ -1,0 +1,32 @@
+{
+  "metadata": {
+    "mission": "MISR",
+    "name": "MISR DHR Natural Color",
+    "config_type": "compositor",
+    "schema_version": "1.1",
+    "description": "Natural-color RGB composite from MISR DHR bands while preserving the input granule hierarchy."
+  },
+  "input": {
+    "variable": "/Land_Parameter_Average/DHR",
+    "band_dimension": "Band",
+    "band_coordinate": "Band"
+  },
+  "channels": [
+    {"name": "red", "select": {"value": "red_672nm"}},
+    {"name": "green", "select": {"value": "green_558nm"}},
+    {"name": "blue", "select": {"value": "blue_446nm"}}
+  ],
+  "processing": {
+    "clip": {"min": 0.0, "max": 1.0},
+    "nodata_values": [-9999.0]
+  },
+  "output": {
+    "variable": "/Land_Parameter_Average/DHR",
+    "preserve_structure": true,
+    "channel_dimension": "rgb_band",
+    "channel_order": ["red", "green", "blue"],
+    "display_range": {"min": 0.0, "max": 255.0},
+    "dtype": "float32",
+    "fill_value": -9999.0
+  }
+}

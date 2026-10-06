@@ -23,8 +23,11 @@ indices:
 - blue: `blue_446nm`
 
 The selected channels are clipped to `[0, 1]`, source `-9999` values are treated
-as nodata, and the output is a netCDF variable named `rgb` with an `rgb_band`
-coordinate ordered as `red`, `green`, `blue`.
+as nodata, and the values are display-scaled to `[0, 255]`. The output preserves
+the complete input granule hierarchy and replaces only
+`/Land_Parameter_Average/DHR` with a three-channel `rgb_band` composite ordered
+red, green, blue. The original MISR `Band=4` dimension is left intact for other
+variables that may still depend on it.
 
 ## External configuration metadata
 
@@ -48,7 +51,7 @@ DistributionURL
 
 The sample file intended for MISR configuration hosting is:
 
-`config/misr_dhr_natural_color_compositor_config.json`
+`examples/misr_dhr_natural_color_compositor_config.json`
 
 The configuration is validated against `config/config_schema.json` before any
 science processing starts.  Invalid/missing configuration and missing
@@ -110,7 +113,7 @@ or run the CLI directly:
 ```bash
 uv run python -m harmony_compositor_service.cli \
   --input /path/to/MISR_UAT_granule.nc \
-  --config config/misr_dhr_natural_color_compositor_config.json
+  --config examples/misr_dhr_natural_color_compositor_config.json
 ```
 
 Successful output is written to:
@@ -124,12 +127,16 @@ A useful verification command is:
 ```python
 import xarray as xr
 
-ds = xr.open_dataset("data/out_data/<input-stem>_composited.nc")
-print(ds)
+ds = xr.open_dataset(
+    "data/out_data/<input-stem>_composited.nc",
+    group="Land_Parameter_Average",
+    engine="netcdf4",
+)
+print(ds["DHR"])
 print(ds["rgb_band"].values)
 ```
 
-Expected channel order is `['red', 'green', 'blue']`.
+Expected DHR shape is `(Latitude, Longitude, rgb_band)` with `rgb_band=3` and channel order `['red', 'green', 'blue']`.
 
 ## Harmony runtime flow
 
@@ -140,9 +147,9 @@ Expected channel order is `['red', 'green', 'blue']`.
    `COMPOSITOR CONFIGURATION`.
 4. The external JSON is downloaded and validated against the schema.
 5. The configured source variable and Band coordinate labels are validated.
-6. The configured channels are selected and processed.
-7. A multi-channel netCDF is produced while retaining useful source and CF
-   geospatial metadata.
+6. The configured channels are selected, clipped, and display-scaled.
+7. The full source NetCDF hierarchy is copied and only the configured target
+   variable is replaced at the same path with a three-channel RGB composite.
 8. The output is staged to Harmony and returned as the item's `data` asset.
 
 ## Configuration design
@@ -157,8 +164,10 @@ Generic service code handles:
 - coordinate-value band selection;
 - nodata handling;
 - clipping;
-- channel stacking;
-- CF/grid-mapping preservation where available;
+- channel stacking and display scaling;
+- recursive NetCDF group/variable/attribute preservation;
+- target-variable replacement at the original grouped path;
+- CF/grid-mapping preservation;
 - Harmony download/stage behavior.
 
 The MISR JSON supplies product-specific information such as the DHR path, Band
@@ -200,6 +209,7 @@ wrong recipe.
 - Initial science support is MISR DHR natural-color composition only.
 - OPERA and NISAR are intentionally out of scope for this first implementation.
 - UAT credentials/test granules are not committed to the repository.
-- The final downstream Net2COG/HyBIG contract should be confirmed during local
-  and Harmony UAT validation; the current output is a CF-oriented multi-channel
-  netCDF as planned for the initial Compositor service.
+- The MISR output contract is a preserved granule with
+  `/Land_Parameter_Average/DHR(Latitude, Longitude, rgb_band=3)`.
+- Net2Cog/HyBIG end-to-end behavior still requires local and Harmony UAT
+  validation with representative MISR granules.

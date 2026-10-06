@@ -1,9 +1,10 @@
 """Core, configuration-driven composition logic.
 
-The core module deliberately contains no Harmony-specific code.  It accepts a
+The core module deliberately contains no Harmony-specific code. It accepts a
 local netCDF granule and a validated configuration, then writes a composited
-netCDF output.  Keeping Harmony I/O in ``adapter.py`` makes the science logic
-straightforward to unit-test with small synthetic files.
+netCDF output while preserving the input granule hierarchy. For MISR, only the
+configured target variable is replaced; all unrelated groups, dimensions,
+variables, and attributes are copied forward.
 """
 
 from __future__ import annotations
@@ -18,14 +19,7 @@ from harmony_compositor_service.exceptions import GranuleProcessingError
 
 
 def split_variable_path(variable_path: str) -> tuple[str | None, str]:
-    """Split an absolute/grouped netCDF variable path into group and variable.
-
-    Examples
-    --------
-    ``/Land_Parameter_Average/DHR`` becomes
-    ``("Land_Parameter_Average", "DHR")``.  A root variable such as ``DHR``
-    becomes ``(None, "DHR")``.
-    """
+    """Split an absolute/grouped netCDF variable path into group and variable."""
     cleaned = variable_path.strip().strip("/")
     if not cleaned:
         raise GranuleProcessingError("Configured input variable path is empty.")
@@ -36,8 +30,14 @@ def split_variable_path(variable_path: str) -> tuple[str | None, str]:
     return "/".join(parts[:-1]), parts[-1]
 
 
+def _canonical_variable_path(variable_path: str) -> str:
+    """Return a normalized absolute variable path."""
+    group, variable = split_variable_path(variable_path)
+    return f"/{group}/{variable}" if group else f"/{variable}"
+
+
 def _decode_label(value: Any) -> Any:
-    """Decode byte-valued netCDF coordinates so JSON string labels compare cleanly."""
+    """Decode byte-valued netCDF coordinates so JSON labels compare cleanly."""
     if isinstance(value, bytes):
         return value.decode("utf-8")
     if isinstance(value, np.bytes_):
@@ -64,7 +64,7 @@ def _select_channel(
     selected_value: Any,
     channel_name: str,
 ) -> xr.DataArray:
-    """Select one configured band by its coordinate value, never by hard-coded index."""
+    """Select one configured band by coordinate value, never hard-coded index."""
     if band_dimension not in data.dims:
         raise GranuleProcessingError(
             f"Configured band dimension '{band_dimension}' was not found in "
@@ -79,10 +79,6 @@ def _select_channel(
             f"Available '{band_coordinate}' values: {available}."
         )
 
-    # Use the matched position rather than xarray.sel because some netCDF files
-    # expose a dimension-scale coordinate whose decoded dtype differs from the
-    # JSON scalar (for example bytes vs. str).  The index is *derived* from the
-    # coordinate value and is therefore not product-hardcoded.
     index = available.index(requested)
     selected = data.isel({band_dimension: index}, drop=True)
     selected.name = channel_name
@@ -90,81 +86,54 @@ def _select_channel(
 
 
 def _apply_processing(data: xr.DataArray, config: dict[str, Any]) -> xr.DataArray:
-    """Apply common nodata and clipping rules to a selected channel."""
+    """Translate configured nodata to NaN and clip a selected source channel."""
     result = data.astype(np.float64)
 
-    # Preserve existing NaNs and translate explicitly configured source nodata
-    # values into NaN before clipping.  This prevents source fill values such as
-    # -9999 from being clipped into a plausible display value of 0.
     for nodata_value in config["processing"].get("nodata_values", []):
         result = result.where(result != float(nodata_value))
 
     clip = config["processing"]["clip"]
-    result = result.clip(min=float(clip["min"]), max=float(clip["max"]))
-    return result
+    return result.clip(min=float(clip["min"]), max=float(clip["max"]))
 
 
-def _copy_support_variables(
-    source_path: Path,
-    group: str | None,
-    source_data: xr.DataArray,
-    output: xr.Dataset,
-) -> xr.Dataset:
-    """Copy small geospatial support variables referenced by the source variable.
+def _scale_for_display(data: xr.DataArray, config: dict[str, Any]) -> xr.DataArray:
+    """Linearly scale clipped science values into the configured display range.
 
-    A CF ``grid_mapping`` variable (commonly named ``crs``) is essential for
-    downstream geospatial services.  It is copied when present in the same
-    group.  Dimension coordinates are already carried by xarray during concat.
+    MISR DHR is clipped to 0..1 and then scaled to 0..255. Keeping the output as
+    floating point allows -9999 to remain an unambiguous nodata value while
+    Net2Cog can emit three raster bands that HyBIG can consume as RGB.
     """
-    grid_mapping = source_data.attrs.get("grid_mapping")
-    if not grid_mapping:
-        return output
+    clip = config["processing"]["clip"]
+    display = config["output"]["display_range"]
+    source_min = float(clip["min"])
+    source_max = float(clip["max"])
+    output_min = float(display["min"])
+    output_max = float(display["max"])
 
-    try:
-        with xr.open_dataset(source_path, group=group, decode_cf=False) as source_ds:
-            if grid_mapping in source_ds.variables:
-                output[grid_mapping] = source_ds[grid_mapping].load()
-    except (OSError, ValueError):
-        # Failure to copy an optional support variable should not hide a valid
-        # composition.  The primary variable's attributes remain available for
-        # diagnostics and validation by downstream services.
-        pass
-    return output
+    if source_max == source_min:
+        raise GranuleProcessingError("Configured clip range cannot have zero width.")
+
+    normalized = (data - source_min) / (source_max - source_min)
+    return output_min + normalized * (output_max - output_min)
 
 
-def compose_granule(
-    input_path: str | Path,
-    config: dict[str, Any],
-    output_path: str | Path,
-) -> Path:
-    """Compose configured source bands and write a single multi-channel netCDF.
-
-    The output contains one variable (``rgb`` in the MISR recipe) whose final
-    dimension is the configured channel dimension.  Channel labels are written
-    as a coordinate, so downstream processing can discover the R/G/B order
-    without relying on implicit numeric indices.
-    """
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
+def _compose_target_data(
+    input_path: Path, config: dict[str, Any]
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Create the replacement RGB data cube and return source variable metadata."""
     group, variable_name = split_variable_path(config["input"]["variable"])
     band_dimension = config["input"]["band_dimension"]
     band_coordinate = config["input"].get("band_coordinate", band_dimension)
 
     try:
-        with xr.open_dataset(input_path, group=group, decode_cf=True) as dataset:
+        with xr.open_dataset(input_path, group=group, decode_cf=True, engine="netcdf4") as dataset:
             if variable_name not in dataset.variables:
                 group_text = group or "/"
                 raise GranuleProcessingError(
-                    f"Configured variable '{variable_name}' was not found in group "
-                    f"'{group_text}'."
+                    f"Configured variable '{variable_name}' was not found in group '{group_text}'."
                 )
 
             source = dataset[variable_name]
-            source_attrs = dict(source.attrs)
-            root_attrs = dict(dataset.attrs)
-
             channels: dict[str, xr.DataArray] = {}
             for channel in config["channels"]:
                 name = channel["name"]
@@ -175,75 +144,232 @@ def compose_granule(
                     selected_value=channel["select"]["value"],
                     channel_name=name,
                 )
-                channels[name] = _apply_processing(selected, config).load()
+                processed = _apply_processing(selected, config)
+                channels[name] = _scale_for_display(processed, config).load()
 
             order = config["output"]["channel_order"]
-            missing = [name for name in order if name not in channels]
-            if missing:
-                raise GranuleProcessingError(
-                    f"Output channel_order references undefined channels: {missing}."
-                )
-
             output_dimension = config["output"]["channel_dimension"]
             stacked = xr.concat(
                 [channels[name] for name in order],
                 dim=xr.IndexVariable(output_dimension, order),
             )
 
-            # Keep the spatial dimensions first and RGB/channel dimension last.
-            spatial_dims = [dim for dim in stacked.dims if dim != output_dimension]
-            stacked = stacked.transpose(*spatial_dims, output_dimension)
-            stacked.name = config["output"]["variable"]
-            stacked.attrs = {
-                key: value
-                for key, value in source_attrs.items()
-                if key not in {"_FillValue", "valid_min", "valid_max"}
+            output_dims = tuple(
+                output_dimension if dim == band_dimension else dim for dim in source.dims
+            )
+            stacked = stacked.transpose(*output_dims)
+
+            metadata = {
+                "source_dimensions": tuple(source.dims),
+                "source_attrs": dict(source.attrs),
+                "output_dimensions": output_dims,
+                "channel_labels": list(order),
+                "source_band_values": [
+                    channel["select"]["value"] for channel in config["channels"]
+                ],
             }
-            stacked.attrs.update(
-                {
-                    "long_name": config["metadata"]["name"],
-                    "compositor_config_schema_version": config["metadata"]["schema_version"],
-                    "compositor_channel_order": ",".join(order),
-                }
-            )
-
-            output = xr.Dataset({stacked.name: stacked}, attrs=root_attrs)
-            output.attrs.update(
-                {
-                    "compositor_service": "Harmony Compositor Service",
-                    "compositor_config_name": config["metadata"]["name"],
-                }
-            )
-            output = _copy_support_variables(input_path, group, source, output)
-
-        fill_value = float(config["output"]["fill_value"])
-        dtype = config["output"]["dtype"]
-        encoding: dict[str, Any] = {
-            config["output"]["variable"]: {
-                "dtype": dtype,
-                "_FillValue": fill_value,
-            }
-        }
-
-        # netCDF4 is a runtime dependency of the service and supports grouped
-        # source products plus compression.  The fallback keeps lightweight
-        # developer/test environments usable when only scipy is installed.
-        try:
-            import netCDF4  # noqa: F401
-
-            encoding[config["output"]["variable"]].update(
-                {"zlib": True, "complevel": 4, "shuffle": True}
-            )
-            output.to_netcdf(
-                output_path, mode="w", engine="netcdf4", encoding=encoding
-            )
-        except ImportError:  # pragma: no cover - CI/runtime installs netCDF4
-            output.to_netcdf(output_path, mode="w", engine="scipy", encoding=encoding)
+            return np.asarray(stacked.values), metadata
     except GranuleProcessingError:
         raise
     except Exception as exc:
         raise GranuleProcessingError(
-            f"Failed to compose granule '{input_path.name}': {exc}"
+            f"Failed to compose variable '{config['input']['variable']}' from "
+            f"granule '{input_path.name}': {exc}"
+        ) from exc
+
+
+def _get_fill_value(variable: Any) -> Any:
+    """Return a netCDF variable's _FillValue, if present."""
+    return variable.getncattr("_FillValue") if "_FillValue" in variable.ncattrs() else None
+
+
+def _create_variable_like(dst_group: Any, name: str, source: Any) -> Any:
+    """Create a destination variable preserving common netCDF storage settings."""
+    filters = source.filters() or {}
+    kwargs: dict[str, Any] = {}
+    fill_value = _get_fill_value(source)
+    if fill_value is not None:
+        kwargs["fill_value"] = fill_value
+    if filters.get("zlib", False):
+        kwargs.update({"zlib": True, "shuffle": filters.get("shuffle", False)})
+        if filters.get("complevel") is not None:
+            kwargs["complevel"] = filters["complevel"]
+    return dst_group.createVariable(name, source.datatype, source.dimensions, **kwargs)
+
+
+def _copy_variable_attributes(source: Any, destination: Any, skip: set[str] | None = None) -> None:
+    """Copy variable attributes except those explicitly skipped."""
+    skipped = {"_FillValue"}
+    if skip:
+        skipped.update(skip)
+    for attr in source.ncattrs():
+        if attr not in skipped:
+            destination.setncattr(attr, source.getncattr(attr))
+
+
+def _copy_group_preserving_structure(
+    src_group: Any,
+    dst_group: Any,
+    current_group: str,
+    *,
+    target_path: str,
+    replacement_data: np.ndarray,
+    replacement_metadata: dict[str, Any],
+    config: dict[str, Any],
+) -> None:
+    """Recursively copy a netCDF group, replacing only the configured variable."""
+    target_group, target_name = split_variable_path(target_path)
+    target_group = target_group or ""
+
+    for dim_name, dim in src_group.dimensions.items():
+        dst_group.createDimension(dim_name, None if dim.isunlimited() else len(dim))
+
+    is_target_group = current_group == target_group
+    channel_dimension = config["output"]["channel_dimension"]
+    if is_target_group and channel_dimension not in dst_group.dimensions:
+        dst_group.createDimension(channel_dimension, len(config["output"]["channel_order"]))
+
+    for var_name, source_var in src_group.variables.items():
+        full_path = f"/{current_group}/{var_name}" if current_group else f"/{var_name}"
+        if full_path == _canonical_variable_path(target_path):
+            source_dims = list(source_var.dimensions)
+            band_dimension = config["input"]["band_dimension"]
+            if band_dimension not in source_dims:
+                raise GranuleProcessingError(
+                    f"Target variable '{full_path}' does not use configured band dimension "
+                    f"'{band_dimension}'."
+                )
+            output_dims = tuple(
+                channel_dimension if dim == band_dimension else dim
+                for dim in source_dims
+            )
+
+            fill_value = config["output"]["fill_value"]
+            dtype = config["output"]["dtype"]
+            filters = source_var.filters() or {}
+            kwargs: dict[str, Any] = {"fill_value": fill_value}
+            if filters.get("zlib", False):
+                kwargs.update({"zlib": True, "shuffle": filters.get("shuffle", False)})
+                if filters.get("complevel") is not None:
+                    kwargs["complevel"] = filters["complevel"]
+
+            dst_var = dst_group.createVariable(var_name, dtype, output_dims, **kwargs)
+            _copy_variable_attributes(
+                source_var,
+                dst_var,
+                skip={
+                    "valid_min",
+                    "valid_max",
+                    "valid_range",
+                    "scale_factor",
+                    "add_offset",
+                    "_Unsigned",
+                },
+            )
+            dst_var.setncattr("long_name", config["metadata"]["name"])
+            dst_var.setncattr(
+                "compositor_config_schema_version",
+                config["metadata"]["schema_version"],
+            )
+            dst_var.setncattr(
+                "compositor_channel_order",
+                ",".join(config["output"]["channel_order"]),
+            )
+            dst_var.setncattr(
+                "compositor_source_band_values",
+                ",".join(str(value) for value in replacement_metadata["source_band_values"]),
+            )
+            display = config["output"]["display_range"]
+            dst_var.setncattr("compositor_display_range", f"{display['min']},{display['max']}")
+
+            data = np.asarray(replacement_data, dtype=dtype)
+            data = np.where(np.isnan(data), fill_value, data)
+            dst_var[:] = data
+        else:
+            dst_var = _create_variable_like(dst_group, var_name, source_var)
+            _copy_variable_attributes(source_var, dst_var)
+            dst_var[:] = source_var[:]
+
+    if is_target_group and channel_dimension not in src_group.variables:
+        coord = dst_group.createVariable(channel_dimension, "i2", (channel_dimension,))
+        coord[:] = np.arange(1, len(config["output"]["channel_order"]) + 1, dtype=np.int16)
+        coord.setncattr("long_name", "RGB channel index")
+        coord.setncattr("channel_names", ",".join(config["output"]["channel_order"]))
+        coord.setncattr(
+            "source_band_values",
+            ",".join(str(value) for value in replacement_metadata["source_band_values"]),
+        )
+
+    for attr in src_group.ncattrs():
+        dst_group.setncattr(attr, src_group.getncattr(attr))
+
+    if current_group == "":
+        dst_group.setncattr("compositor_service", "Harmony Compositor Service")
+        dst_group.setncattr("compositor_config_name", config["metadata"]["name"])
+
+    for subgroup_name, subgroup in src_group.groups.items():
+        new_group = dst_group.createGroup(subgroup_name)
+        new_current = f"{current_group}/{subgroup_name}" if current_group else subgroup_name
+        _copy_group_preserving_structure(
+            subgroup,
+            new_group,
+            new_current,
+            target_path=target_path,
+            replacement_data=replacement_data,
+            replacement_metadata=replacement_metadata,
+            config=config,
+        )
+
+
+def compose_granule(
+    input_path: str | Path,
+    config: dict[str, Any],
+    output_path: str | Path,
+) -> Path:
+    """Compose RGB and preserve the source granule hierarchy.
+
+    The configured input variable is replaced at the same group/name with a
+    three-channel composite. All other source groups, dimensions, variables,
+    and attributes are copied into the output granule.
+    """
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import netCDF4
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise GranuleProcessingError(
+            "netCDF4 is required for structure-preserving Compositor output."
+        ) from exc
+
+    target_path = _canonical_variable_path(config["input"]["variable"])
+    output_target = _canonical_variable_path(config["output"]["variable"])
+    if output_target != target_path:
+        raise GranuleProcessingError(
+            "For structure-preserving composition, output.variable must match input.variable."
+        )
+
+    replacement_data, replacement_metadata = _compose_target_data(input_path, config)
+
+    try:
+        with netCDF4.Dataset(input_path, "r") as source, netCDF4.Dataset(
+            output_path, "w", format="NETCDF4"
+        ) as destination:
+            _copy_group_preserving_structure(
+                source,
+                destination,
+                "",
+                target_path=target_path,
+                replacement_data=replacement_data,
+                replacement_metadata=replacement_metadata,
+                config=config,
+            )
+    except GranuleProcessingError:
+        raise
+    except Exception as exc:
+        raise GranuleProcessingError(
+            f"Failed to write structure-preserving composited granule '{input_path.name}': {exc}"
         ) from exc
 
     return output_path
@@ -254,7 +380,7 @@ def process_product(
     config: dict[str, Any],
     input_filename: str,
 ) -> Path:
-    """Process one file staged in ``settings['data_dir']`` and return its output."""
+    """Process one staged granule and return the output path."""
     input_path = Path(settings["data_dir"]) / input_filename
     if not input_path.exists():
         raise GranuleProcessingError(f"Input granule does not exist: {input_path}")

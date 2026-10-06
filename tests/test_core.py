@@ -1,13 +1,11 @@
-from pathlib import Path
-
 import numpy as np
 import pytest
 import xarray as xr
 
 from harmony_compositor_service.core import (
     _apply_processing,
+    _scale_for_display,
     _select_channel,
-    compose_granule,
     split_variable_path,
 )
 from harmony_compositor_service.exceptions import GranuleProcessingError
@@ -19,10 +17,10 @@ def _config():
             "mission": "MISR",
             "name": "Synthetic MISR RGB",
             "config_type": "compositor",
-            "schema_version": "1.0",
+            "schema_version": "1.1",
         },
         "input": {
-            "variable": "/DHR",
+            "variable": "/Land_Parameter_Average/DHR",
             "band_dimension": "Band",
             "band_coordinate": "Band",
         },
@@ -33,9 +31,11 @@ def _config():
         ],
         "processing": {"clip": {"min": 0.0, "max": 1.0}, "nodata_values": [-9999.0]},
         "output": {
-            "variable": "rgb",
+            "variable": "/Land_Parameter_Average/DHR",
+            "preserve_structure": True,
             "channel_dimension": "rgb_band",
             "channel_order": ["red", "green", "blue"],
+            "display_range": {"min": 0.0, "max": 255.0},
             "dtype": "float32",
             "fill_value": -9999.0,
         },
@@ -88,37 +88,8 @@ def test_processing_preserves_nodata_and_clips():
     np.testing.assert_allclose(result.values[0, 1:], [0.0, 0.5, 1.0])
 
 
-def test_compose_granule_end_to_end_with_root_synthetic_file(tmp_path):
-    values = np.zeros((2, 3, 4), dtype=np.float32)
-    values[:, :, 0] = 0.2  # blue
-    values[:, :, 1] = 0.4  # green
-    values[:, :, 2] = 0.6  # red
-    values[:, :, 3] = 0.8  # NIR (not selected)
-    values[0, 0, 2] = 1.5  # red should clip to 1
-    values[1, 2, 0] = -9999.0  # blue should remain fill/nodata
-
-    ds = xr.Dataset(
-        {
-            "DHR": xr.DataArray(
-                values,
-                dims=("y", "x", "Band"),
-                coords={
-                    "y": [1.0, 0.0],
-                    "x": [10.0, 11.0, 12.0],
-                    "Band": ["blue_446nm", "green_558nm", "red_672nm", "nir_867nm"],
-                },
-                attrs={"units": "1"},
-            )
-        }
-    )
-    source = tmp_path / "input.nc"
-    target = tmp_path / "output.nc"
-    ds.to_netcdf(source, engine="scipy")
-
-    compose_granule(source, _config(), target)
-    with xr.open_dataset(target) as output:
-        assert output["rgb"].dims == ("y", "x", "rgb_band")
-        assert list(output["rgb_band"].values) == ["red", "green", "blue"]
-        assert output["rgb"].shape == (2, 3, 3)
-        assert output["rgb"].sel(rgb_band="red").values[0, 0] == pytest.approx(1.0)
-        assert np.isnan(output["rgb"].sel(rgb_band="blue").values[1, 2])
+def test_scale_for_display_maps_zero_one_to_zero_255():
+    data = xr.DataArray([[0.0, 0.25, 0.5, 1.0, np.nan]])
+    result = _scale_for_display(data, _config())
+    np.testing.assert_allclose(result.values[0, :4], [0.0, 63.75, 127.5, 255.0])
+    assert np.isnan(result.values[0, 4])

@@ -1,19 +1,16 @@
-# Local validation performed during repository generation
+# Test Results
 
-The generated source was syntax-compiled and the locally runnable unit suite was
-executed successfully in the artifact environment.
+Validation performed for the structure-preserving MISR RGB update:
 
-```text
-13 passed, 1 skipped
-```
+- `PYTHONPATH=src pytest -q` -> **15 passed, 1 skipped**.
+- The skipped test is the grouped netCDF4 integration test because the artifact
+  environment does not provide the `netCDF4` Python package.
+- `python -m compileall -q src tests` passed.
+- `uv lock --check` passed.
+- Full `uv sync --extra dev --frozen` could not be completed in the artifact
+  environment because external package downloads were blocked by DNS/network
+  restrictions.
 
-The skipped test is the grouped netCDF4 MISR-style integration/unit test because
-`netCDF4` is not installed in the artifact-generation environment. It is part of
-the repository and will run in the normal project/CI environment, where
-`netCDF4` is a declared dependency.
-
-`uv lock --check` also completed successfully against the included lock file.
-
-Docker image execution was not performed in the artifact-generation environment
-because Docker is not available there. Docker files were derived from the
-provided working Filtering Service baseline and adapted for Compositor.
+The Docker/runtime dependency list already includes `netCDF4`; the grouped
+structure-preservation test is intended to run in the normal project test image
+and local development environment.

@@ -8,6 +8,6 @@ fi
 
 uv run python -m harmony_compositor_service.cli \
   --input "$1" \
-  --config config/misr_dhr_natural_color_compositor_config.json \
+  --config examples/misr_dhr_natural_color_compositor_config.json \
   --schema config/config_schema.json \
   --settings config/settings.json

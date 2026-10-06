@@ -1,38 +1,54 @@
 # Compositor configuration
 
-The first schema is intentionally small.  Fields should be added only when a
-new supported recipe requires a reusable capability.
+The first production recipe is MISR DHR natural color. Product-specific band
+labels remain in external JSON rather than Python source.
 
 ## Metadata
 
-`metadata` identifies the recipe and schema.  `config_type` must be
-`compositor`.
+`metadata` identifies the recipe and schema. `config_type` must be `compositor`.
 
 ## Input
 
-`input.variable` may be a grouped netCDF path such as:
+`input.variable` is the grouped netCDF path to the source variable, for example:
 
 ```text
 /Land_Parameter_Average/DHR
 ```
 
-`band_dimension` names the dimension containing bands. `band_coordinate`
-identifies the coordinate whose values are used for selection. If omitted, the
-band dimension itself is used as the coordinate name.
+`band_dimension` identifies the source band dimension. `band_coordinate`
+identifies the coordinate whose labels are used to select channels. MISR bands
+are selected by labels such as `red_672nm`, not by hard-coded indices.
 
 ## Channels
 
-Each channel gives a logical output name and a coordinate value to select. For
-MISR natural color, the values are wavelength-labelled Band coordinate values,
-not fixed indices.
+Each entry maps a logical output channel (`red`, `green`, or `blue`) to a
+source coordinate value.
 
 ## Processing
 
-The initial reusable processing operations are source nodata translation and
-numeric clipping.  Nodata is converted to NaN before clipping so a fill value
-cannot accidentally become valid display data.
+Configured nodata values are translated to NaN before clipping. The MISR recipe
+clips DHR to `[0, 1]`.
 
 ## Output
 
-The output section specifies the multi-channel variable name, channel
-dimension, explicit channel order, output floating-point type, and fill value.
+Compositor preserves the input NetCDF hierarchy. `output.variable` must match
+`input.variable`, so the target variable is replaced at the same group/name.
+All unrelated groups, dimensions, variables, and attributes are copied forward.
+
+The target variable receives a new three-element channel dimension rather than
+reusing or shrinking the source `Band` dimension. This is important because
+other variables in the granule may still use the original four-element MISR
+`Band` dimension.
+
+`display_range` linearly maps the clipped science range into display-ready RGB
+values. For MISR DHR, `[0, 1]` maps to `[0, 255]`. The sample recipe keeps the
+output as `float32` with `-9999` fill so nodata remains distinct from valid black
+or white pixels.
+
+The expected replacement variable is therefore:
+
+```text
+/Land_Parameter_Average/DHR(Latitude, Longitude, rgb_band=3)
+```
+
+with channel order red, green, blue.

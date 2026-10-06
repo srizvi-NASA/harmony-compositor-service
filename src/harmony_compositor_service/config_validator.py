@@ -27,9 +27,9 @@ def _load_schema(schema_file: str | Path) -> dict[str, Any]:
 def _validate_semantics(config: dict[str, Any]) -> None:
     """Validate relationships that are awkward to express in draft-07 JSON Schema."""
     clip = config["processing"]["clip"]
-    if float(clip["min"]) > float(clip["max"]):
+    if float(clip["min"]) >= float(clip["max"]):
         raise ConfigurationError(
-            "Configuration validation error at 'processing/clip': min must be <= max."
+            "Configuration validation error at 'processing/clip': min must be < max."
         )
 
     channel_names = [channel["name"] for channel in config["channels"]]
@@ -43,6 +43,27 @@ def _validate_semantics(config: dict[str, Any]) -> None:
         raise ConfigurationError(
             "Configuration validation error at 'output/channel_order': values must "
             "match the configured channel names exactly."
+        )
+
+    display = config["output"]["display_range"]
+    if float(display["min"]) >= float(display["max"]):
+        raise ConfigurationError(
+            "Configuration validation error at 'output/display_range': min must be < max."
+        )
+
+    input_variable = "/" + config["input"]["variable"].strip("/")
+    output_variable = "/" + config["output"]["variable"].strip("/")
+    if input_variable != output_variable:
+        raise ConfigurationError(
+            "Configuration validation error at 'output/variable': for preserve_structure "
+            "output, the target variable must match input.variable exactly."
+        )
+
+    if config["output"]["channel_dimension"] == config["input"]["band_dimension"]:
+        raise ConfigurationError(
+            "Configuration validation error at 'output/channel_dimension': use a new "
+            "dimension name so the original source Band dimension can be preserved for "
+            "other variables."
         )
 
 

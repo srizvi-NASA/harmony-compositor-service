@@ -52,6 +52,7 @@ source = "vcs"
 
 [tool.hatch.version.raw-options]
 version_scheme = "no-guess-dev"
+fallback_version = "0.1.0"
 
 [tool.mypy]
 python_version = "3.12"

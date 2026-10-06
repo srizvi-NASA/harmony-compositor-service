@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Local input netCDF granule")
     parser.add_argument(
         "--config",
-        default="config/misr_dhr_natural_color_compositor_config.json",
+        default="examples/misr_dhr_natural_color_compositor_config.json",
         help="Local Compositor configuration JSON",
     )
     parser.add_argument(

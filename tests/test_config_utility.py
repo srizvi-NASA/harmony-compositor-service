@@ -46,23 +46,33 @@ def test_remote_config_is_schema_validated(monkeypatch):
             "mission": "MISR",
             "name": "MISR DHR Natural Color",
             "config_type": "compositor",
-            "schema_version": "1.0",
+            "schema_version": "1.1",
         },
-        "input": {"variable": "/DHR", "band_dimension": "Band"},
+        "input": {
+            "variable": "/Land_Parameter_Average/DHR",
+            "band_dimension": "Band",
+            "band_coordinate": "Band",
+        },
         "channels": [
-            {"name": "red", "select": {"value": "red"}},
-            {"name": "green", "select": {"value": "green"}},
+            {"name": "red", "select": {"value": "red_672nm"}},
+            {"name": "green", "select": {"value": "green_558nm"}},
+            {"name": "blue", "select": {"value": "blue_446nm"}},
         ],
-        "processing": {"clip": {"min": 0, "max": 1}},
+        "processing": {"clip": {"min": 0, "max": 1}, "nodata_values": [-9999]},
         "output": {
-            "variable": "rgb",
+            "variable": "/Land_Parameter_Average/DHR",
+            "preserve_structure": True,
             "channel_dimension": "rgb_band",
-            "channel_order": ["red", "green"],
+            "channel_order": ["red", "green", "blue"],
+            "display_range": {"min": 0, "max": 255},
             "dtype": "float32",
             "fill_value": -9999,
         },
     }
     response = Mock(ok=True)
     response.json.return_value = sample
-    monkeypatch.setattr("harmony_compositor_service.config_utility.requests.get", lambda *a, **k: response)
+    monkeypatch.setattr(
+        "harmony_compositor_service.config_utility.requests.get",
+        lambda *a, **k: response,
+    )
     assert get_remote_compositor_config("https://example.test/config.json", SCHEMA) == sample

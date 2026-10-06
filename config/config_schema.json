@@ -29,7 +29,7 @@
     },
     "channels": {
       "type": "array",
-      "minItems": 2,
+      "minItems": 3,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -71,15 +71,34 @@
     "output": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["variable", "channel_dimension", "channel_order", "dtype", "fill_value"],
+      "required": [
+        "variable",
+        "preserve_structure",
+        "channel_dimension",
+        "channel_order",
+        "display_range",
+        "dtype",
+        "fill_value"
+      ],
       "properties": {
         "variable": {"type": "string", "minLength": 1},
+        "preserve_structure": {"type": "boolean", "const": true},
         "channel_dimension": {"type": "string", "minLength": 1},
         "channel_order": {
           "type": "array",
-          "minItems": 2,
+          "minItems": 3,
+          "maxItems": 3,
           "items": {"type": "string", "minLength": 1},
           "uniqueItems": true
+        },
+        "display_range": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": {"type": "number"},
+            "max": {"type": "number"}
+          }
         },
         "dtype": {"type": "string", "enum": ["float32", "float64"]},
         "fill_value": {"type": "number"}
